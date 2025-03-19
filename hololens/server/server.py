@@ -9,6 +9,7 @@ import time
 import socket
 import logging
 import os
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +37,9 @@ except Exception as e:
 frame_buffer = None
 processed_frame = None
 frame_lock = threading.Lock()
+
+# YOLO detection settings
+CONFIDENCE_THRESHOLD = 0.25  # Minimum confidence for detections
 
 
 def get_local_ip():
@@ -199,21 +203,26 @@ def upload_frame():
             logger.error("Failed to decode frame")
             return jsonify({"error": "Failed to decode frame", "boxes": []}), 400
 
-        logger.info(f"Decoded frame: {frame.shape}")
+        # Log frame dimensions and format
+        orig_height, orig_width, channels = frame.shape
+        logger.info(f"Decoded frame: {orig_width}x{orig_height}x{channels}")
 
-        # Get the original aspect ratio of the received frame
-        orig_height, orig_width = frame.shape[:2]
+        # Calculate aspect ratio
         orig_aspect_ratio = orig_width / orig_height
+        logger.info(f"Original aspect ratio: {orig_aspect_ratio:.4f}")
 
-        # Log the aspect ratio for debugging
-        logger.info(f"Original frame aspect ratio: {orig_aspect_ratio}")
+        # Create a copy for processing
+        frame_for_detection = frame.copy()
 
-        # Update the frame buffer
+        # Store the original dimensions for coordinate mapping
+        detection_height, detection_width = frame_for_detection.shape[:2]
+
+        # Update the frame buffer for the video feed
         with frame_lock:
-            frame_buffer = frame
+            frame_buffer = frame.copy()
 
         # Run YOLO detection
-        results = model(frame)
+        results = model(frame_for_detection)
         result = results[0]  # Get the first result
 
         # Create list to store detection results
@@ -221,11 +230,22 @@ def upload_frame():
 
         # Extract bounding boxes, classes and confidence scores
         if hasattr(result, "boxes") and len(result.boxes) > 0:
+            # Log raw detection details for the first box to help with debugging
+            if len(result.boxes) > 0:
+                first_box = result.boxes[0]
+                x1, y1, x2, y2 = first_box.xyxyn[0].tolist()
+                class_id = int(first_box.cls[0].item())
+                class_name = model.names[class_id]
+                confidence = float(first_box.conf[0].item())
+                logger.info(
+                    f"First detection: {class_name} ({confidence:.2f}) at [{x1:.4f}, {y1:.4f}, {x2:.4f}, {y2:.4f}]"
+                )
+
             for box in result.boxes:
                 # Get box coordinates (normalized format)
                 x1, y1, x2, y2 = box.xyxyn[
                     0
-                ].tolist()  # xyxyn returns normalized coordinates
+                ].tolist()  # xyxyn returns normalized coordinates (0-1)
 
                 # Calculate center, width, height (normalized)
                 center_x = (x1 + x2) / 2
@@ -241,7 +261,8 @@ def upload_frame():
                 confidence = float(box.conf[0].item())
 
                 # Only keep confident detections
-                if confidence > 0.25:  # Adjust threshold as needed
+                if confidence > CONFIDENCE_THRESHOLD:
+                    # Add to detection boxes with all the metadata needed for client-side rendering
                     detection_boxes.append(
                         {
                             "className": class_name,
@@ -250,10 +271,11 @@ def upload_frame():
                             "y": center_y,
                             "width": width,
                             "height": height,
-                            # Add additional metadata to help client with accurate mapping
-                            "orig_frame_width": orig_width,
-                            "orig_frame_height": orig_height,
-                            "orig_aspect_ratio": orig_aspect_ratio,
+                            # Original normalized coordinates (x1,y1,x2,y2)
+                            "x1": x1,
+                            "y1": y1,
+                            "x2": x2,
+                            "y2": y2,
                         }
                     )
 
@@ -266,17 +288,27 @@ def upload_frame():
         with frame_lock:
             processed_frame = annotated_frame
 
-        # Return the bounding box data as JSON with added metadata
-        return jsonify(
-            {
-                "boxes": detection_boxes,
-                "frame_info": {
-                    "width": orig_width,
-                    "height": orig_height,
-                    "aspect_ratio": orig_aspect_ratio,
-                },
-            }
-        )
+        # Create the response with frame info
+        response_data = {
+            "boxes": detection_boxes,
+            "frame_info": {
+                "width": orig_width,
+                "height": orig_height,
+                "aspect_ratio": orig_aspect_ratio,
+                "detection_width": detection_width,
+                "detection_height": detection_height,
+            },
+        }
+
+        # Log the full response for debugging (truncate if too large)
+        response_json = json.dumps(response_data)
+        if len(response_json) > 1000:
+            logger.debug(f"Response: {response_json[:1000]}...")
+        else:
+            logger.debug(f"Response: {response_json}")
+
+        # Return the bounding box data as JSON
+        return jsonify(response_data)
 
     except Exception as e:
         logger.error(f"Error processing frame: {str(e)}", exc_info=True)
