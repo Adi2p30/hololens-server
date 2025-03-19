@@ -201,6 +201,13 @@ def upload_frame():
 
         logger.info(f"Decoded frame: {frame.shape}")
 
+        # Get the original aspect ratio of the received frame
+        orig_height, orig_width = frame.shape[:2]
+        orig_aspect_ratio = orig_width / orig_height
+
+        # Log the aspect ratio for debugging
+        logger.info(f"Original frame aspect ratio: {orig_aspect_ratio}")
+
         # Update the frame buffer
         with frame_lock:
             frame_buffer = frame
@@ -243,6 +250,10 @@ def upload_frame():
                             "y": center_y,
                             "width": width,
                             "height": height,
+                            # Add additional metadata to help client with accurate mapping
+                            "orig_frame_width": orig_width,
+                            "orig_frame_height": orig_height,
+                            "orig_aspect_ratio": orig_aspect_ratio,
                         }
                     )
 
@@ -255,8 +266,17 @@ def upload_frame():
         with frame_lock:
             processed_frame = annotated_frame
 
-        # Return the bounding box data as JSON
-        return jsonify({"boxes": detection_boxes})
+        # Return the bounding box data as JSON with added metadata
+        return jsonify(
+            {
+                "boxes": detection_boxes,
+                "frame_info": {
+                    "width": orig_width,
+                    "height": orig_height,
+                    "aspect_ratio": orig_aspect_ratio,
+                },
+            }
+        )
 
     except Exception as e:
         logger.error(f"Error processing frame: {str(e)}", exc_info=True)
@@ -280,36 +300,5 @@ if __name__ == "__main__":
         print(f"- {interface}: http://{ip}:{port}")
     print()
 
-    # Generate self-signed SSL certificate (uncomment if needed)
-    # from OpenSSL import crypto, SSL
-    # cert_file = "cert.pem"
-    # key_file = "key.pem"
-
-    # if not os.path.exists(cert_file) or not os.path.exists(key_file):
-    #     print("Generating self-signed SSL certificate...")
-    #     k = crypto.PKey()
-    #     k.generate_key(crypto.TYPE_RSA, 2048)
-    #     cert = crypto.X509()
-    #     cert.get_subject().C = "US"
-    #     cert.get_subject().ST = "State"
-    #     cert.get_subject().L = "Locality"
-    #     cert.get_subject().O = "Organization"
-    #     cert.get_subject().OU = "Organizational Unit"
-    #     cert.get_subject().CN = local_ip
-    #     cert.set_serial_number(1000)
-    #     cert.gmtime_adj_notBefore(0)
-    #     cert.gmtime_adj_notAfter(10*365*24*60*60)
-    #     cert.set_issuer(cert.get_subject())
-    #     cert.set_pubkey(k)
-    #     cert.sign(k, 'sha256')
-    #     with open(cert_file, "wb") as f:
-    #         f.write(crypto.dump_certificate(crypto.FILETYPE_PEM, cert))
-    #     with open(key_file, "wb") as f:
-    #         f.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, k))
-
     # Start the server
-    # For HTTPS:
-    # app.run(host='0.0.0.0', port=port, debug=False, threaded=True, ssl_context=(cert_file, key_file))
-
-    # For HTTP:
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
