@@ -203,9 +203,9 @@ def upload_frame():
             logger.error("Failed to decode frame")
             return jsonify({"error": "Failed to decode frame", "boxes": []}), 400
 
-        # Get dimensions
-        frame_height, frame_width, channels = frame.shape
-        logger.info(f"Decoded frame: {frame_width}x{frame_height}x{channels}")
+        # Get dimensions - use integers to ensure exact pixel matches
+        frame_height, frame_width = frame.shape[:2]
+        logger.info(f"Decoded frame: {frame_width}x{frame_height}")
 
         # Update the frame buffer for the video feed
         with frame_lock:
@@ -222,20 +222,18 @@ def upload_frame():
         if hasattr(result, "boxes") and len(result.boxes) > 0:
             # Process each detected box
             for box_idx, box in enumerate(result.boxes):
-                # Get normalized coordinates (0-1 range)
-                x1, y1, x2, y2 = box.xyxyn[0].tolist()
-                
-                # Get pixel coordinates
+                # Get pixel coordinates - convert to integers for exact pixel matching
                 x1_px, y1_px, x2_px, y2_px = box.xyxy[0].tolist()
                 
-                # Calculate center and width/height in both formats
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
-                width = x2 - x1
-                height = y2 - y1
+                # Round to integers for exact pixel coordinates
+                x1_px = int(round(x1_px))
+                y1_px = int(round(y1_px))
+                x2_px = int(round(x2_px))
+                y2_px = int(round(y2_px))
                 
-                center_x_px = (x1_px + x2_px) / 2
-                center_y_px = (y1_px + y2_px) / 2
+                # Calculate center and width/height in pixels
+                center_x_px = int(round((x1_px + x2_px) / 2))
+                center_y_px = int(round((y1_px + y2_px) / 2))
                 width_px = x2_px - x1_px
                 height_px = y2_px - y1_px
 
@@ -248,24 +246,14 @@ def upload_frame():
 
                 # Only keep confident detections
                 if confidence > CONFIDENCE_THRESHOLD:
-                    # Add detection to the list
+                    # Add detection to the list - use only pixel coordinates
                     detection_boxes.append(
                         {
                             "className": class_name,
                             "confidence": confidence,
                             "boxId": box_idx,
                             
-                            # Normalized coordinates (0-1)
-                            "x": center_x,
-                            "y": center_y,
-                            "width": width,
-                            "height": height,
-                            "x1": x1,
-                            "y1": y1,
-                            "x2": x2,
-                            "y2": y2,
-                            
-                            # Pixel coordinates
+                            # Pixel coordinates (exact)
                             "x_px": center_x_px,
                             "y_px": center_y_px,
                             "width_px": width_px,
@@ -295,8 +283,7 @@ def upload_frame():
             "frame_info": {
                 "width": frame_width,
                 "height": frame_height,
-                "aspect_ratio": frame_width / frame_height,
-                "no_conversion": True  # Flag to indicate no conversion was applied
+                "exact_pixels": True  # Flag to indicate exact pixel coordinates
             }
         }
 
