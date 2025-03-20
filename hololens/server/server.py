@@ -211,7 +211,7 @@ def upload_frame():
         orig_aspect_ratio = orig_width / orig_height
         logger.info(f"Original aspect ratio: {orig_aspect_ratio:.4f}")
 
-        # Create a copy for processing
+        # Create a copy for processing - without resizing to preserve coordinates
         frame_for_detection = frame.copy()
 
         # Store the original dimensions for coordinate mapping
@@ -233,25 +233,40 @@ def upload_frame():
             # Log raw detection details for the first box to help with debugging
             if len(result.boxes) > 0:
                 first_box = result.boxes[0]
+                # Get raw coordinates (non-normalized)
+                raw_box = first_box.xyxy[0].tolist()  # [x1, y1, x2, y2] in pixels
+                x1_raw, y1_raw, x2_raw, y2_raw = raw_box
+                
+                # Get normalized coordinates (0-1)
                 x1, y1, x2, y2 = first_box.xyxyn[0].tolist()
+                
                 class_id = int(first_box.cls[0].item())
                 class_name = model.names[class_id]
                 confidence = float(first_box.conf[0].item())
+                
                 logger.info(
-                    f"First detection: {class_name} ({confidence:.2f}) at [{x1:.4f}, {y1:.4f}, {x2:.4f}, {y2:.4f}]"
+                    f"First detection RAW: {class_name} ({confidence:.2f}) at pixels [{x1_raw:.1f}, {y1_raw:.1f}, {x2_raw:.1f}, {y2_raw:.1f}]"
+                )
+                logger.info(
+                    f"First detection NORM: {class_name} ({confidence:.2f}) at norm [{x1:.4f}, {y1:.4f}, {x2:.4f}, {y2:.4f}]"
                 )
 
             for box in result.boxes:
-                # Get box coordinates (normalized format)
-                x1, y1, x2, y2 = box.xyxyn[
-                    0
-                ].tolist()  # xyxyn returns normalized coordinates (0-1)
+                # Get box coordinates in both pixel and normalized formats
+                x1_px, y1_px, x2_px, y2_px = box.xyxy[0].tolist()  # Pixel coordinates
+                x1, y1, x2, y2 = box.xyxyn[0].tolist()  # Normalized coordinates (0-1)
 
                 # Calculate center, width, height (normalized)
                 center_x = (x1 + x2) / 2
                 center_y = (y1 + y2) / 2
                 width = x2 - x1
                 height = y2 - y1
+
+                # Calculate center, width, height (pixel values)
+                center_x_px = (x1_px + x2_px) / 2
+                center_y_px = (y1_px + y2_px) / 2
+                width_px = x2_px - x1_px
+                height_px = y2_px - y1_px
 
                 # Get class ID and name
                 class_id = int(box.cls[0].item())
@@ -267,15 +282,25 @@ def upload_frame():
                         {
                             "className": class_name,
                             "confidence": confidence,
+                            # Normalized values (0-1)
                             "x": center_x,
                             "y": center_y,
                             "width": width,
                             "height": height,
-                            # Original normalized coordinates (x1,y1,x2,y2)
+                            # Corners - normalized (0-1)
                             "x1": x1,
                             "y1": y1,
                             "x2": x2,
                             "y2": y2,
+                            # Raw pixel values
+                            "x_px": center_x_px,
+                            "y_px": center_y_px,
+                            "width_px": width_px,
+                            "height_px": height_px,
+                            "x1_px": x1_px,
+                            "y1_px": y1_px,
+                            "x2_px": x2_px,
+                            "y2_px": y2_px,
                         }
                     )
 
@@ -288,7 +313,7 @@ def upload_frame():
         with frame_lock:
             processed_frame = annotated_frame
 
-        # Create the response with frame info
+        # Create the response with enhanced frame info
         response_data = {
             "boxes": detection_boxes,
             "frame_info": {
@@ -297,6 +322,11 @@ def upload_frame():
                 "aspect_ratio": orig_aspect_ratio,
                 "detection_width": detection_width,
                 "detection_height": detection_height,
+                "orientation": "landscape" if orig_width > orig_height else "portrait",
+                "processing_info": {
+                    "resizing_applied": False,
+                    "original_coordinates_preserved": True,
+                }
             },
         }
 
