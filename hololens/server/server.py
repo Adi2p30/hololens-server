@@ -198,146 +198,164 @@ def upload_frame():
         nparr = np.frombuffer(frame_data, np.uint8)
 
         # Decode image
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if frame is None:
+        orig_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if orig_frame is None:
             logger.error("Failed to decode frame")
             return jsonify({"error": "Failed to decode frame", "boxes": []}), 400
 
-        # Check and correct orientation
-        # HoloLens often sends frames in landscape, while some phone cameras might use portrait
-        frame_height, frame_width, channels = frame.shape
-        orientation = "landscape" if frame_width >= frame_height else "portrait"
-        logger.info(f"Decoded frame: {frame_width}x{frame_height}x{channels}, {orientation} orientation")
+        # Get original dimensions
+        orig_height, orig_width, channels = orig_frame.shape
+        orig_aspect_ratio = orig_width / orig_height
+        
+        # Determine orientation
+        orientation = "landscape" if orig_width >= orig_height else "portrait"
+        logger.info(f"Original frame: {orig_width}x{orig_height} ({orientation})")
 
-        # Calculate aspect ratio
-        aspect_ratio = frame_width / frame_height
-        logger.info(f"Original aspect ratio: {aspect_ratio:.4f}")
+        # Create a copy for YOLO processing
+        # YOLO works best with square-ish images, so we'll resize to a standard size
+        yolo_size = 640  # Standard YOLO input size
+        
+        # Resize while maintaining aspect ratio
+        if orig_width >= orig_height:
+            # Landscape orientation
+            yolo_width = yolo_size
+            yolo_height = int(yolo_size / orig_aspect_ratio)
+        else:
+            # Portrait orientation
+            yolo_height = yolo_size
+            yolo_width = int(yolo_size * orig_aspect_ratio)
+            
+        # Ensure dimensions are even (some models prefer this)
+        yolo_width = (yolo_width // 2) * 2
+        yolo_height = (yolo_height // 2) * 2
+        
+        # Resize frame for YOLO processing
+        yolo_frame = cv2.resize(orig_frame, (yolo_width, yolo_height))
+        
+        logger.info(f"YOLO input: {yolo_width}x{yolo_height}")
 
-        # Create a copy for processing - keep original dimensions
-        frame_for_detection = frame.copy()
-
-        # Store dimensions for coordinate mapping
-        detection_height, detection_width = frame_for_detection.shape[:2]
-
-        # Update the frame buffer for the video feed
+        # Update the frame buffer for the video feed display
         with frame_lock:
-            frame_buffer = frame.copy()
+            frame_buffer = orig_frame.copy()
 
-        # Run YOLO detection
-        results = model(frame_for_detection)
+        # Run YOLO detection on the resized frame
+        results = model(yolo_frame)
         result = results[0]  # Get the first result
+
+        # Draw on the original frame for visualization
+        annotated_frame = result.plot()
+        
+        # Update the processed frame
+        with frame_lock:
+            processed_frame = annotated_frame
 
         # Create list to store detection results
         detection_boxes = []
+        
+        # Calculate scale factors to map from YOLO frame to original frame
+        scale_x = orig_width / yolo_width
+        scale_y = orig_height / yolo_height
 
         # Extract bounding boxes, classes, and confidence scores
         if hasattr(result, "boxes") and len(result.boxes) > 0:
-            # Log raw detection details for the first box
-            if len(result.boxes) > 0:
-                first_box = result.boxes[0]
+            for box_idx, box in enumerate(result.boxes):
+                # Get normalized coordinates from YOLO (0-1 range)
+                x1_norm, y1_norm, x2_norm, y2_norm = box.xyxyn[0].tolist()
                 
-                # Get raw pixel coordinates (non-normalized)
-                raw_box = first_box.xyxy[0].tolist()  # [x1, y1, x2, y2] in pixels
-                x1_raw, y1_raw, x2_raw, y2_raw = raw_box
+                # Convert normalized to pixel coordinates in YOLO frame
+                x1_yolo = x1_norm * yolo_width
+                y1_yolo = y1_norm * yolo_height
+                x2_yolo = x2_norm * yolo_width
+                y2_yolo = y2_norm * yolo_height
                 
-                # Get normalized coordinates (0-1)
-                norm_box = first_box.xyxyn[0].tolist()  # [x1, y1, x2, y2] normalized
-                x1_norm, y1_norm, x2_norm, y2_norm = norm_box
+                # Scale coordinates to original frame
+                x1_orig = x1_yolo * scale_x
+                y1_orig = y1_yolo * scale_y
+                x2_orig = x2_yolo * scale_x
+                y2_orig = y2_yolo * scale_y
                 
-                class_id = int(first_box.cls[0].item())
-                class_name = model.names[class_id]
-                confidence = float(first_box.conf[0].item())
+                # Calculate center and size in original frame
+                center_x_orig = (x1_orig + x2_orig) / 2
+                center_y_orig = (y1_orig + y2_orig) / 2
+                width_orig = x2_orig - x1_orig
+                height_orig = y2_orig - y1_orig
                 
-                logger.info(
-                    f"First detection - Class: {class_name}, Conf: {confidence:.2f}"
-                )
-                logger.info(
-                    f"Raw pixels: x1={x1_raw:.1f}, y1={y1_raw:.1f}, x2={x2_raw:.1f}, y2={y2_raw:.1f}"
-                )
-                logger.info(
-                    f"Normalized: x1={x1_norm:.4f}, y1={y1_norm:.4f}, x2={x2_norm:.4f}, y2={y2_norm:.4f}"
-                )
-
-            for box in result.boxes:
-                # Get box coordinates in pixel format
-                x1_px, y1_px, x2_px, y2_px = box.xyxy[0].tolist()  # [x1, y1, x2, y2] in pixels
+                # Re-normalize for client use (0-1 range in original frame)
+                center_x_norm = center_x_orig / orig_width
+                center_y_norm = center_y_orig / orig_height
+                width_norm = width_orig / orig_width
+                height_norm = height_orig / orig_height
                 
-                # Get box coordinates in normalized format (0-1)
-                x1, y1, x2, y2 = box.xyxyn[0].tolist()  # [x1, y1, x2, y2] normalized
-                
-                # Calculate center and size (normalized)
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
-                width = x2 - x1
-                height = y2 - y1
-                
-                # Calculate center and size (pixels)
-                center_x_px = (x1_px + x2_px) / 2
-                center_y_px = (y1_px + y2_px) / 2
-                width_px = x2_px - x1_px
-                height_px = y2_px - y1_px
-
                 # Get class ID and name
                 class_id = int(box.cls[0].item())
                 class_name = model.names[class_id]
 
                 # Get confidence
                 confidence = float(box.conf[0].item())
-
+                
                 # Only keep confident detections
                 if confidence > CONFIDENCE_THRESHOLD:
-                    # Add to detection boxes with all needed metadata
-                    detection_boxes.append(
-                        {
-                            "className": class_name,
-                            "confidence": confidence,
-                            # Normalized values (0-1)
-                            "x": center_x,
-                            "y": center_y,
-                            "width": width,
-                            "height": height,
-                            # Corners - normalized (0-1)
-                            "x1": x1,
-                            "y1": y1,
-                            "x2": x2,
-                            "y2": y2,
-                            # Raw pixel values
-                            "x_px": center_x_px,
-                            "y_px": center_y_px,
-                            "width_px": width_px,
-                            "height_px": height_px,
-                            "x1_px": x1_px,
-                            "y1_px": y1_px,
-                            "x2_px": x2_px,
-                            "y2_px": y2_px,
-                        }
-                    )
-
-            # Sort by confidence (highest first) to maintain consistent order
+                    # Create client-ready detection object with all coordinates pre-calculated
+                    detection_box = {
+                        "className": class_name,
+                        "confidence": confidence,
+                        "boxId": box_idx,
+                        
+                        # Client-ready normalized coordinates (already aspect-ratio corrected)
+                        "x": center_x_norm,                  # Center X (0-1)
+                        "y": center_y_norm,                  # Center Y (0-1)
+                        "width": width_norm,                 # Width (0-1)
+                        "height": height_norm,               # Height (0-1)
+                        "x1": x1_orig / orig_width,          # Top-left X (0-1)
+                        "y1": y1_orig / orig_height,         # Top-left Y (0-1)
+                        "x2": x2_orig / orig_width,          # Bottom-right X (0-1)
+                        "y2": y2_orig / orig_height,         # Bottom-right Y (0-1)
+                        
+                        # Exact pixel coordinates in original frame
+                        "x_px": center_x_orig,               # Center X in pixels
+                        "y_px": center_y_orig,               # Center Y in pixels
+                        "width_px": width_orig,              # Width in pixels
+                        "height_px": height_orig,            # Height in pixels
+                        "x1_px": x1_orig,                    # Top-left X in pixels
+                        "y1_px": y1_orig,                    # Top-left Y in pixels
+                        "x2_px": x2_orig,                    # Bottom-right X in pixels
+                        "y2_px": y2_orig,                    # Bottom-right Y in pixels
+                        
+                        # Original YOLO coordinates (for debugging)
+                        "yolo_x1": x1_yolo,
+                        "yolo_y1": y1_yolo,
+                        "yolo_x2": x2_yolo,
+                        "yolo_y2": y2_yolo
+                    }
+                    
+                    detection_boxes.append(detection_box)
+            
+            # Sort by confidence (highest first) for consistent ordering
             detection_boxes.sort(key=lambda box: box["confidence"], reverse=True)
+            
+            # Log detection info
+            if detection_boxes:
+                logger.info(f"Detected {len(detection_boxes)} objects with confidence >= {CONFIDENCE_THRESHOLD}")
+                first_box = detection_boxes[0]
+                logger.info(f"Top detection: {first_box['className']} ({first_box['confidence']:.2f})")
+                logger.info(f"  Original frame: ({first_box['x1_px']:.1f}, {first_box['y1_px']:.1f}) → ({first_box['x2_px']:.1f}, {first_box['y2_px']:.1f})")
 
-        logger.info(f"Detected {len(detection_boxes)} objects")
-        
-        # Draw detection results on the frame for the server's display
-        annotated_frame = result.plot()
-
-        # Update the processed frame for server display
-        with frame_lock:
-            processed_frame = annotated_frame
-
-        # Create the response with enhanced frame info
+        # Create the response with complete frame info and pre-calculated coordinates
         response_data = {
             "boxes": detection_boxes,
             "frame_info": {
-                "width": frame_width,
-                "height": frame_height,
-                "aspect_ratio": aspect_ratio,
-                "detection_width": detection_width,
-                "detection_height": detection_height,
-                "orientation": orientation,
+                "width": orig_width,                 # Original width in pixels
+                "height": orig_height,               # Original height in pixels
+                "aspect_ratio": orig_aspect_ratio,   # Original aspect ratio
+                "orientation": orientation,          # Landscape or portrait
+                "yolo_width": yolo_width,            # YOLO input width
+                "yolo_height": yolo_height,          # YOLO input height
+                "scale_x": scale_x,                  # Scale factor from YOLO to original (X)
+                "scale_y": scale_y,                  # Scale factor from YOLO to original (Y)
                 "processing_info": {
-                    "resizing_applied": False,
-                    "original_coordinates_preserved": True,
+                    "coordinates_in_original_frame": True,  # Coordinates are already mapped to original frame
+                    "aspect_ratio_corrected": True,         # Aspect ratio correction has been applied
+                    "requires_client_correction": False     # Client doesn't need to apply corrections
                 }
             },
         }
