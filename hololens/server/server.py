@@ -203,18 +203,20 @@ def upload_frame():
             logger.error("Failed to decode frame")
             return jsonify({"error": "Failed to decode frame", "boxes": []}), 400
 
-        # Log frame dimensions and format
-        orig_height, orig_width, channels = frame.shape
-        logger.info(f"Decoded frame: {orig_width}x{orig_height}x{channels}")
+        # Check and correct orientation
+        # HoloLens often sends frames in landscape, while some phone cameras might use portrait
+        frame_height, frame_width, channels = frame.shape
+        orientation = "landscape" if frame_width >= frame_height else "portrait"
+        logger.info(f"Decoded frame: {frame_width}x{frame_height}x{channels}, {orientation} orientation")
 
         # Calculate aspect ratio
-        orig_aspect_ratio = orig_width / orig_height
-        logger.info(f"Original aspect ratio: {orig_aspect_ratio:.4f}")
+        aspect_ratio = frame_width / frame_height
+        logger.info(f"Original aspect ratio: {aspect_ratio:.4f}")
 
-        # Create a copy for processing - without resizing to preserve coordinates
+        # Create a copy for processing - keep original dimensions
         frame_for_detection = frame.copy()
 
-        # Store the original dimensions for coordinate mapping
+        # Store dimensions for coordinate mapping
         detection_height, detection_width = frame_for_detection.shape[:2]
 
         # Update the frame buffer for the video feed
@@ -228,41 +230,48 @@ def upload_frame():
         # Create list to store detection results
         detection_boxes = []
 
-        # Extract bounding boxes, classes and confidence scores
+        # Extract bounding boxes, classes, and confidence scores
         if hasattr(result, "boxes") and len(result.boxes) > 0:
-            # Log raw detection details for the first box to help with debugging
+            # Log raw detection details for the first box
             if len(result.boxes) > 0:
                 first_box = result.boxes[0]
-                # Get raw coordinates (non-normalized)
+                
+                # Get raw pixel coordinates (non-normalized)
                 raw_box = first_box.xyxy[0].tolist()  # [x1, y1, x2, y2] in pixels
                 x1_raw, y1_raw, x2_raw, y2_raw = raw_box
                 
                 # Get normalized coordinates (0-1)
-                x1, y1, x2, y2 = first_box.xyxyn[0].tolist()
+                norm_box = first_box.xyxyn[0].tolist()  # [x1, y1, x2, y2] normalized
+                x1_norm, y1_norm, x2_norm, y2_norm = norm_box
                 
                 class_id = int(first_box.cls[0].item())
                 class_name = model.names[class_id]
                 confidence = float(first_box.conf[0].item())
                 
                 logger.info(
-                    f"First detection RAW: {class_name} ({confidence:.2f}) at pixels [{x1_raw:.1f}, {y1_raw:.1f}, {x2_raw:.1f}, {y2_raw:.1f}]"
+                    f"First detection - Class: {class_name}, Conf: {confidence:.2f}"
                 )
                 logger.info(
-                    f"First detection NORM: {class_name} ({confidence:.2f}) at norm [{x1:.4f}, {y1:.4f}, {x2:.4f}, {y2:.4f}]"
+                    f"Raw pixels: x1={x1_raw:.1f}, y1={y1_raw:.1f}, x2={x2_raw:.1f}, y2={y2_raw:.1f}"
+                )
+                logger.info(
+                    f"Normalized: x1={x1_norm:.4f}, y1={y1_norm:.4f}, x2={x2_norm:.4f}, y2={y2_norm:.4f}"
                 )
 
             for box in result.boxes:
-                # Get box coordinates in both pixel and normalized formats
-                x1_px, y1_px, x2_px, y2_px = box.xyxy[0].tolist()  # Pixel coordinates
-                x1, y1, x2, y2 = box.xyxyn[0].tolist()  # Normalized coordinates (0-1)
-
-                # Calculate center, width, height (normalized)
+                # Get box coordinates in pixel format
+                x1_px, y1_px, x2_px, y2_px = box.xyxy[0].tolist()  # [x1, y1, x2, y2] in pixels
+                
+                # Get box coordinates in normalized format (0-1)
+                x1, y1, x2, y2 = box.xyxyn[0].tolist()  # [x1, y1, x2, y2] normalized
+                
+                # Calculate center and size (normalized)
                 center_x = (x1 + x2) / 2
                 center_y = (y1 + y2) / 2
                 width = x2 - x1
                 height = y2 - y1
-
-                # Calculate center, width, height (pixel values)
+                
+                # Calculate center and size (pixels)
                 center_x_px = (x1_px + x2_px) / 2
                 center_y_px = (y1_px + y2_px) / 2
                 width_px = x2_px - x1_px
@@ -277,7 +286,7 @@ def upload_frame():
 
                 # Only keep confident detections
                 if confidence > CONFIDENCE_THRESHOLD:
-                    # Add to detection boxes with all the metadata needed for client-side rendering
+                    # Add to detection boxes with all needed metadata
                     detection_boxes.append(
                         {
                             "className": class_name,
@@ -304,9 +313,12 @@ def upload_frame():
                         }
                     )
 
-        logger.info(f"Detected {len(detection_boxes)} objects")
+            # Sort by confidence (highest first) to maintain consistent order
+            detection_boxes.sort(key=lambda box: box["confidence"], reverse=True)
 
-        # Draw detection results on the frame for server-side display
+        logger.info(f"Detected {len(detection_boxes)} objects")
+        
+        # Draw detection results on the frame for the server's display
         annotated_frame = result.plot()
 
         # Update the processed frame for server display
@@ -317,25 +329,18 @@ def upload_frame():
         response_data = {
             "boxes": detection_boxes,
             "frame_info": {
-                "width": orig_width,
-                "height": orig_height,
-                "aspect_ratio": orig_aspect_ratio,
+                "width": frame_width,
+                "height": frame_height,
+                "aspect_ratio": aspect_ratio,
                 "detection_width": detection_width,
                 "detection_height": detection_height,
-                "orientation": "landscape" if orig_width > orig_height else "portrait",
+                "orientation": orientation,
                 "processing_info": {
                     "resizing_applied": False,
                     "original_coordinates_preserved": True,
                 }
             },
         }
-
-        # Log the full response for debugging (truncate if too large)
-        response_json = json.dumps(response_data)
-        if len(response_json) > 1000:
-            logger.debug(f"Response: {response_json[:1000]}...")
-        else:
-            logger.debug(f"Response: {response_json}")
 
         # Return the bounding box data as JSON
         return jsonify(response_data)
