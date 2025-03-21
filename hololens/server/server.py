@@ -11,6 +11,8 @@ import logging
 import os
 import json
 
+# Set up logging to capture server activity
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -222,20 +224,20 @@ def upload_frame():
         if hasattr(result, "boxes") and len(result.boxes) > 0:
             # Process each detected box
             for box_idx, box in enumerate(result.boxes):
-                # Get pixel coordinates - convert to integers for exact pixel matching
+                # Get pixel coordinates directly from YOLO
                 x1_px, y1_px, x2_px, y2_px = box.xyxy[0].tolist()
                 
-                # Round to integers for exact pixel coordinates
-                x1_px = int(round(x1_px))
-                y1_px = int(round(y1_px))
-                x2_px = int(round(x2_px))
-                y2_px = int(round(y2_px))
+                # Convert to absolute integer coordinates - no scaling or transformations
+                x1_abs = int(round(x1_px))
+                y1_abs = int(round(y1_px))
+                x2_abs = int(round(x2_px))
+                y2_abs = int(round(y2_px))
                 
-                # Calculate center and width/height in pixels
-                center_x_px = int(round((x1_px + x2_px) / 2))
-                center_y_px = int(round((y1_px + y2_px) / 2))
-                width_px = x2_px - x1_px
-                height_px = y2_px - y1_px
+                # Calculate center and dimensions in absolute pixels
+                center_x_abs = int((x1_abs + x2_abs) // 2)
+                center_y_abs = int((y1_abs + y2_abs) // 2)
+                width_abs = int(x2_abs - x1_abs)
+                height_abs = int(y2_abs - y1_abs)
 
                 # Get class ID and name
                 class_id = int(box.cls[0].item())
@@ -246,22 +248,28 @@ def upload_frame():
 
                 # Only keep confident detections
                 if confidence > CONFIDENCE_THRESHOLD:
-                    # Add detection to the list - use only pixel coordinates
+                    # Add detection to the list with absolute pixel coordinates only
                     detection_boxes.append(
                         {
                             "className": class_name,
                             "confidence": confidence,
                             "boxId": box_idx,
                             
-                            # Pixel coordinates (exact)
-                            "x_px": center_x_px,
-                            "y_px": center_y_px,
-                            "width_px": width_px,
-                            "height_px": height_px,
-                            "x1_px": x1_px,
-                            "y1_px": y1_px,
-                            "x2_px": x2_px,
-                            "y2_px": y2_px
+                            # Absolute pixel coordinates only - no relative values
+                            "x_abs": center_x_abs,
+                            "y_abs": center_y_abs,
+                            "width_abs": width_abs,
+                            "height_abs": height_abs,
+                            "x1_abs": x1_abs,
+                            "y1_abs": y1_abs,
+                            "x2_abs": x2_abs,
+                            "y2_abs": y2_abs,
+                            
+                            # Include original raw values for debugging
+                            "x1_raw": x1_px,
+                            "y1_raw": y1_px,
+                            "x2_raw": x2_px,
+                            "y2_raw": y2_px
                         }
                     )
             
@@ -277,13 +285,14 @@ def upload_frame():
         with frame_lock:
             processed_frame = annotated_frame
 
-        # Create the response with frame info and detection boxes
+        # Include original frame dimensions in the response
         response_data = {
             "boxes": detection_boxes,
             "frame_info": {
                 "width": frame_width,
                 "height": frame_height,
-                "exact_pixels": True  # Flag to indicate exact pixel coordinates
+                "absolute_coordinates": True,  # Flag indicating absolute pixel coordinates
+                "coordinate_system": "top_left_origin"  # Explicitly state the coordinate system
             }
         }
 
