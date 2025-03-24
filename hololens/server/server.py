@@ -11,8 +11,6 @@ import logging
 import os
 import json
 
-# Set up logging to capture server activity
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -32,7 +30,7 @@ try:
     model = YOLO(model_path)
     logger.info("YOLO model loaded successfully")
 except Exception as e:
-    logger.error(f"Failed to load YOLO model: {str(e)}")
+    logger.error(f"Failed to load YOLO model:    {str(e)}")
     model = None
 
 # Store frames globally
@@ -205,16 +203,26 @@ def upload_frame():
             logger.error("Failed to decode frame")
             return jsonify({"error": "Failed to decode frame", "boxes": []}), 400
 
-        # Get dimensions - use integers to ensure exact pixel matches
-        frame_height, frame_width = frame.shape[:2]
-        logger.info(f"Decoded frame: {frame_width}x{frame_height}")
+        # Log frame dimensions and format
+        orig_height, orig_width, channels = frame.shape
+        logger.info(f"Decoded frame: {orig_width}x{orig_height}x{channels}")
+
+        # Calculate aspect ratio
+        orig_aspect_ratio = orig_width / orig_height
+        logger.info(f"Original aspect ratio: {orig_aspect_ratio:.4f}")
+
+        # Create a copy for processing
+        frame_for_detection = frame.copy()
+
+        # Store the original dimensions for coordinate mapping
+        detection_height, detection_width = frame_for_detection.shape[:2]
 
         # Update the frame buffer for the video feed
         with frame_lock:
             frame_buffer = frame.copy()
 
-        # Run YOLO detection directly on the received frame without any modifications
-        results = model(frame)
+        # Run YOLO detection
+        results = model(frame_for_detection)
         result = results[0]  # Get the first result
 
         # Create list to store detection results
@@ -222,22 +230,28 @@ def upload_frame():
 
         # Extract bounding boxes, classes and confidence scores
         if hasattr(result, "boxes") and len(result.boxes) > 0:
-            # Process each detected box
-            for box_idx, box in enumerate(result.boxes):
-                # Get pixel coordinates directly from YOLO
-                x1_px, y1_px, x2_px, y2_px = box.xyxy[0].tolist()
-                
-                # Convert to absolute integer coordinates - no scaling or transformations
-                x1_abs = int(round(x1_px))
-                y1_abs = int(round(y1_px))
-                x2_abs = int(round(x2_px))
-                y2_abs = int(round(y2_px))
-                
-                # Calculate center and dimensions in absolute pixels
-                center_x_abs = int((x1_abs + x2_abs) // 2)
-                center_y_abs = int((y1_abs + y2_abs) // 2)
-                width_abs = int(x2_abs - x1_abs)
-                height_abs = int(y2_abs - y1_abs)
+            # Log raw detection details for the first box to help with debugging
+            if len(result.boxes) > 0:
+                first_box = result.boxes[0]
+                x1, y1, x2, y2 = first_box.xyxyn[0].tolist()
+                class_id = int(first_box.cls[0].item())
+                class_name = model.names[class_id]
+                confidence = float(first_box.conf[0].item())
+                logger.info(
+                    f"First detection: {class_name} ({confidence:.2f}) at [{x1:.4f}, {y1:.4f}, {x2:.4f}, {y2:.4f}]"
+                )
+
+            for box in result.boxes:
+                # Get box coordinates (normalized format)
+                x1, y1, x2, y2 = box.xyxyn[
+                    0
+                ].tolist()  # xyxyn returns normalized coordinates (0-1)
+
+                # Calculate center, width, height (normalized)
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+                width = x2 - x1
+                height = y2 - y1
 
                 # Get class ID and name
                 class_id = int(box.cls[0].item())
@@ -248,33 +262,22 @@ def upload_frame():
 
                 # Only keep confident detections
                 if confidence > CONFIDENCE_THRESHOLD:
-                    # Add detection to the list with absolute pixel coordinates only
+                    # Add to detection boxes with all the metadata needed for client-side rendering
                     detection_boxes.append(
                         {
                             "className": class_name,
                             "confidence": confidence,
-                            "boxId": box_idx,
-                            
-                            # Absolute pixel coordinates only - no relative values
-                            "x_abs": center_x_abs,
-                            "y_abs": center_y_abs,
-                            "width_abs": width_abs,
-                            "height_abs": height_abs,
-                            "x1_abs": x1_abs,
-                            "y1_abs": y1_abs,
-                            "x2_abs": x2_abs,
-                            "y2_abs": y2_abs,
-                            
-                            # Include original raw values for debugging
-                            "x1_raw": x1_px,
-                            "y1_raw": y1_px,
-                            "x2_raw": x2_px,
-                            "y2_raw": y2_px
+                            "x": center_x,
+                            "y": center_y,
+                            "width": width,
+                            "height": height,
+                            # Original normalized coordinates (x1,y1,x2,y2)
+                            "x1": x1,
+                            "y1": y1,
+                            "x2": x2,
+                            "y2": y2,
                         }
                     )
-            
-            # Sort by confidence (highest first)
-            detection_boxes.sort(key=lambda box: box["confidence"], reverse=True)
 
         logger.info(f"Detected {len(detection_boxes)} objects")
 
@@ -285,16 +288,24 @@ def upload_frame():
         with frame_lock:
             processed_frame = annotated_frame
 
-        # Include original frame dimensions in the response
+        # Create the response with frame info
         response_data = {
             "boxes": detection_boxes,
             "frame_info": {
-                "width": frame_width,
-                "height": frame_height,
-                "absolute_coordinates": True,  # Flag indicating absolute pixel coordinates
-                "coordinate_system": "top_left_origin"  # Explicitly state the coordinate system
-            }
+                "width": orig_width,
+                "height": orig_height,
+                "aspect_ratio": orig_aspect_ratio,
+                "detection_width": detection_width,
+                "detection_height": detection_height,
+            },
         }
+
+        # Log the full response for debugging (truncate if too large)
+        response_json = json.dumps(response_data)
+        if len(response_json) > 1000:
+            logger.debug(f"Response: {response_json[:1000]}...")
+        else:
+            logger.debug(f"Response: {response_json}")
 
         # Return the bounding box data as JSON
         return jsonify(response_data)
