@@ -10,7 +10,8 @@ from tkinter import ttk, messagebox
 from PIL import Image, ImageTk
 
 
-SERVER_URL = "http://127.0.0.1:8080/predict"
+# Default URL - can be changed in the UI
+SERVER_URL = "http://192.168.4.153:8080/predict"
 
 
 class ObjectDetectionGUI:
@@ -19,17 +20,18 @@ class ObjectDetectionGUI:
         self.root.title("Object Detection Client")
         self.root.geometry("800x600")
         self.root.resizable(True, True)
-
-        self.create_control_frame()
-        self.create_video_frame()
-        self.create_log_frame()
-
+        
+        # Initialize attributes before using them
+        self.camera_index = 0
+        self.interval = 1.0
         self.cap = None
         self.running = False
         self.last_send_time = 0
         self.video_thread = None
-        self.camera_index = 0
-        self.interval = 1.0
+
+        self.create_control_frame()
+        self.create_video_frame()
+        self.create_log_frame()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -37,6 +39,16 @@ class ObjectDetectionGUI:
         control_frame = ttk.LabelFrame(self.root, text="Controls")
         control_frame.pack(fill="x", padx=10, pady=10)
 
+        # Server URL Frame
+        server_frame = ttk.Frame(control_frame)
+        server_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(server_frame, text="Server URL:").pack(side="left", padx=5)
+        self.server_url_var = tk.StringVar(value=SERVER_URL)
+        self.server_entry = ttk.Entry(server_frame, textvariable=self.server_url_var, width=40)
+        self.server_entry.pack(side="left", padx=5, fill="x", expand=True)
+        
+        # Camera Frame
         camera_frame = ttk.Frame(control_frame)
         camera_frame.pack(side="left", padx=10, pady=5)
 
@@ -45,6 +57,7 @@ class ObjectDetectionGUI:
         self.camera_selector.set(self.camera_index)
         self.camera_selector.pack(side="left")
 
+        # Interval Frame
         interval_frame = ttk.Frame(control_frame)
         interval_frame.pack(side="left", padx=10, pady=5)
 
@@ -77,12 +90,12 @@ class ObjectDetectionGUI:
         log_frame = ttk.LabelFrame(self.root, text="Log")
         log_frame.pack(fill="x", padx=10, pady=10)
 
-        self.log_text = tk.Text(log_frame, height=10, wrap="word")
-        self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.log_text = tk.Text(log_frame, height=100, wrap="word")
+        self.log_text.pack(fill="both", expand=True, padx=5, pady=50)
 
         scrollbar = ttk.Scrollbar(self.log_text, command=self.log_text.yview)
         scrollbar.pack(side="right", fill="y")
-        self.log_text.config(yscrollcommand=scrollbar.set)
+        self.log_text.config(yscrollcommand=scrollbar.set, height=50)
 
     def on_camera_change(self):
         try:
@@ -117,7 +130,7 @@ class ObjectDetectionGUI:
             width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.log(f"Camera initialized with resolution: {width}x{height}")
-            self.log(f"Sending frames to server: {SERVER_URL}")
+            self.log(f"Sending frames to server: {self.server_url_var.get()}")
 
             self.running = True
             self.start_button.config(state="disabled")
@@ -181,11 +194,24 @@ class ObjectDetectionGUI:
                 }
             }
 
+            # Get the current server URL from the entry field
+            server_url = self.server_url_var.get()
+            
+            # Check if the URL uses HTTPS but is on localhost, where certificate verification might fail
+            verify_ssl = True
+            if server_url.startswith('https://') and ('127.0.0.1' in server_url or 'localhost' in server_url):
+                verify_ssl = False
+                # Only log this warning once
+                if not hasattr(self, '_ssl_warning_shown'):
+                    self.log("Warning: SSL verification disabled for localhost HTTPS")
+                    self._ssl_warning_shown = True
+            
             response = requests.post(
-                SERVER_URL,
+                server_url,
                 json=payload,
                 headers={'Content-Type': 'application/json'},
-                timeout=5.0
+                timeout=5.0,
+                verify=verify_ssl
             )
 
             if response.status_code == 202:
