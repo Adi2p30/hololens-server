@@ -9,6 +9,7 @@ import multiprocessing
 import time
 import random
 import queue
+import socket
 import threading
 
 from model_initialisation import Model
@@ -24,6 +25,18 @@ OUTPUT_QUEUE_MAX_SIZE = 50
 WORKER_TIMEOUT = 5.0
 RESULT_TIMEOUT = 5.0
 
+def get_local_ip():
+    """Get the local IP address of the machine"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # doesn't even have to be reachable
+        s.connect(("10.255.255.255", 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = "127.0.0.1"
+    finally:
+        s.close()
+    return IP
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(processName)s:%(threadName)s] - %(message)s')
 log_flask = logging.getLogger('werkzeug')
@@ -224,8 +237,19 @@ if __name__ == "__main__":
     collector_thread.start()
 
     logging.info("Starting Flask server on http://0.0.0.0:8080")
+    print("We reached here")
     try:
+        print("Starting Flask server...")
+        local_ip = get_local_ip()
+        port = 8080
+
+        print(f"\n=== YOLO Vision Server for HoloLens ===")
+        print(f"Server running at http://{local_ip}:{port}")
+        print(f"Health check: http://{local_ip}:{port}/health")
+        print("Share this URL with your HoloLens app")
+        print("===========================\n")
         app.run(host='0.0.0.0', port=8080, debug=False, threaded=True, use_reloader=False)
+        
     except KeyboardInterrupt:
          logging.info("Flask server received KeyboardInterrupt.")
     except Exception as e:

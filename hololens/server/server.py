@@ -83,7 +83,7 @@ def process_frames():
         logger.error("Cannot start processing thread: YOLO model not loaded")
         return
 
-    logger.info("Frame processing thread started")
+    logger.info("Frame pimport socket processing thread started")
     while True:
         try:
             # If there's a frame to process
@@ -109,7 +109,14 @@ def process_frames():
         time.sleep(0.01)
 
 
-# Start the processing thread
+# Start the processing threadlocal_ip = get_local_ip()
+        port = 8080
+
+        print(f"\n=== YOLO Vision Server for HoloLens ===")
+        print(f"Server running at http://{local_ip}:{port}")
+        print(f"Health check: http://{local_ip}:{port}/health")
+        print("Share this URL with your HoloLens app")
+        print("===========================\n")
 if model is not None:
     processing_thread = threading.Thread(target=process_frames, daemon=True)
     processing_thread.start()
